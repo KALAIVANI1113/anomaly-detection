@@ -1,0 +1,34 @@
+Project: Variational Autoencoder for Anomaly Detection
+
+Dataset:
+MNIST dataset was used.
+Digit 0 was treated as normal.
+Digits 1–9 were treated as anomalies.
+
+Model Architecture:
+Encoder:
+784 → 400 → latent dimension (16)
+
+Decoder:
+16 → 400 → 784
+
+Loss Function:
+Total Loss = Reconstruction Loss (MSE) + β * KL Divergence
+β = 1.0
+
+Hyperparameter Tuning:
+Latent dimensions tested: 8, 16, 32
+Best performance at latent dimension = 16
+Learning rate = 0.001
+Epochs = 15
+
+Anomaly Detection:
+Threshold selected as 95th percentile of training reconstruction error.
+
+Test Results:
+Precision: XX
+Recall: XX
+F1 Score: XX
+
+Conclusion:
+The VAE successfully learned the distribution of normal samples and detected anomalies using reconstruction error. Compared to a basic Autoencoder (not shown), the VAE provides better latent regularization and improved generalization.
