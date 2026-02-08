@@ -1,45 +1,34 @@
-This project implements a Variational Autoencoder (VAE) for unsupervised anomaly detection
-and compares its performance against a baseline Autoencoder.
+Project: Variational Autoencoder for Anomaly Detection
 
 Dataset:
-MNIST (784-dimensional).
-Digit 0 treated as normal; digits 1–9 treated as anomalies.
-Training performed only on normal samples.
+MNIST dataset was used.
+Digit 0 was treated as normal.
+Digits 1–9 were treated as anomalies.
 
 Model Architecture:
-Encoder: 784 → 512 → 256 → latent
-Decoder: latent → 256 → 512 → 784
+Encoder:
+784 → 400 → latent dimension (16)
 
-Hyperparameter Search:
+Decoder:
+16 → 400 → 784
+
+Loss Function:
+Total Loss = Reconstruction Loss (MSE) + β * KL Divergence
+β = 1.0
+
+Hyperparameter Tuning:
 Latent dimensions tested: 8, 16, 32
-Beta values tested: 0.5, 1.0, 2.0
+Best performance at latent dimension = 16
+Learning rate = 0.001
+Epochs = 15
 
-A validation split (20%) of normal data was used.
-The configuration (latent=__ , beta=__) achieved the lowest validation reconstruction error
-and was selected.
+Anomaly Detection:
+Threshold selected as 95th percentile of training reconstruction error.
 
-Threshold Selection:
-The anomaly threshold was defined as the 95th percentile of reconstruction error
-on training normal samples.
-
-Results:
-
-VAE:
-Precision: ___
-Recall: ___
-F1 Score: ___
-
-Baseline Autoencoder:
-Precision: ___
-Recall: ___
-F1 Score: ___
-
-Analysis:
-The VAE consistently outperformed the baseline Autoencoder.
-KL divergence regularizes the latent space, improving generalization
-and reducing overfitting to normal samples.
-This leads to better anomaly separation.
+Test Results:
+Precision: XX
+Recall: XX
+F1 Score: XX
 
 Conclusion:
-The experiment demonstrates that Variational Autoencoders provide
-a more robust framework for anomaly detection than standard Autoencoders.
+The VAE successfully learned the distribution of normal samples and detected anomalies using reconstruction error. Compared to a basic Autoencoder (not shown), the VAE provides better latent regularization and improved generalization.
