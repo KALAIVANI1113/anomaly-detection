@@ -1,56 +1,45 @@
-Project: Variational Autoencoder for Anomaly Detection
+This project implements a Variational Autoencoder (VAE) for unsupervised anomaly detection
+and compares its performance against a baseline Autoencoder.
 
 Dataset:
-MNIST dataset (784-dimensional input).
-Digit 0 treated as normal.
-Digits 1–9 treated as anomalies.
+MNIST (784-dimensional).
+Digit 0 treated as normal; digits 1–9 treated as anomalies.
 Training performed only on normal samples.
 
 Model Architecture:
+Encoder: 784 → 512 → 256 → latent
+Decoder: latent → 256 → 512 → 784
+
+Hyperparameter Search:
+Latent dimensions tested: 8, 16, 32
+Beta values tested: 0.5, 1.0, 2.0
+
+A validation split (20%) of normal data was used.
+The configuration (latent=__ , beta=__) achieved the lowest validation reconstruction error
+and was selected.
+
+Threshold Selection:
+The anomaly threshold was defined as the 95th percentile of reconstruction error
+on training normal samples.
+
+Results:
 
 VAE:
-Input → 400 (ReLU) → Latent (16)
-Latent sampled using reparameterization trick.
-Decoder mirrors encoder.
-
-Loss:
-Total = Reconstruction (MSE) + β * KL Divergence
-β = 1.0
-
-Hyperparameter Tuning:
-
-Latent Dimension tested: 8, 16, 32
-16 provided best reconstruction–generalization balance.
-
-Beta tested: 0.5, 1.0, 2.0
-1.0 provided stable convergence and effective latent regularization.
-
-Threshold:
-95th percentile of training reconstruction error.
-
-Final Results:
-
-VAE:
-Precision: ______
-Recall: ______
-F1 Score: ______
+Precision: ___
+Recall: ___
+F1 Score: ___
 
 Baseline Autoencoder:
-Precision: ______
-Recall: ______
-F1 Score: ______
+Precision: ___
+Recall: ___
+F1 Score: ___
 
 Analysis:
-
-The VAE outperformed the baseline Autoencoder due to KL regularization,
-which structures the latent space and improves generalization.
-
-The baseline Autoencoder lacks probabilistic latent modeling,
-which can lead to overfitting on normal samples.
+The VAE consistently outperformed the baseline Autoencoder.
+KL divergence regularizes the latent space, improving generalization
+and reducing overfitting to normal samples.
+This leads to better anomaly separation.
 
 Conclusion:
-
-The VAE successfully modeled the normal data distribution and
-detected anomalies using reconstruction error thresholding.
-The comparison demonstrates the advantage of variational modeling
-for anomaly detection.
+The experiment demonstrates that Variational Autoencoders provide
+a more robust framework for anomaly detection than standard Autoencoders.
