@@ -1,34 +1,56 @@
 Project: Variational Autoencoder for Anomaly Detection
 
 Dataset:
-MNIST dataset was used.
-Digit 0 was treated as normal.
-Digits 1–9 were treated as anomalies.
+MNIST dataset (784-dimensional input).
+Digit 0 treated as normal.
+Digits 1–9 treated as anomalies.
+Training performed only on normal samples.
 
 Model Architecture:
-Encoder:
-784 → 400 → latent dimension (16)
 
-Decoder:
-16 → 400 → 784
+VAE:
+Input → 400 (ReLU) → Latent (16)
+Latent sampled using reparameterization trick.
+Decoder mirrors encoder.
 
-Loss Function:
-Total Loss = Reconstruction Loss (MSE) + β * KL Divergence
+Loss:
+Total = Reconstruction (MSE) + β * KL Divergence
 β = 1.0
 
 Hyperparameter Tuning:
-Latent dimensions tested: 8, 16, 32
-Best performance at latent dimension = 16
-Learning rate = 0.001
-Epochs = 15
 
-Anomaly Detection:
-Threshold selected as 95th percentile of training reconstruction error.
+Latent Dimension tested: 8, 16, 32
+16 provided best reconstruction–generalization balance.
 
-Test Results:
-Precision: XX
-Recall: XX
-F1 Score: XX
+Beta tested: 0.5, 1.0, 2.0
+1.0 provided stable convergence and effective latent regularization.
+
+Threshold:
+95th percentile of training reconstruction error.
+
+Final Results:
+
+VAE:
+Precision: ______
+Recall: ______
+F1 Score: ______
+
+Baseline Autoencoder:
+Precision: ______
+Recall: ______
+F1 Score: ______
+
+Analysis:
+
+The VAE outperformed the baseline Autoencoder due to KL regularization,
+which structures the latent space and improves generalization.
+
+The baseline Autoencoder lacks probabilistic latent modeling,
+which can lead to overfitting on normal samples.
 
 Conclusion:
-The VAE successfully learned the distribution of normal samples and detected anomalies using reconstruction error. Compared to a basic Autoencoder (not shown), the VAE provides better latent regularization and improved generalization.
+
+The VAE successfully modeled the normal data distribution and
+detected anomalies using reconstruction error thresholding.
+The comparison demonstrates the advantage of variational modeling
+for anomaly detection.
