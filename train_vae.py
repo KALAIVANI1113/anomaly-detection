@@ -2,8 +2,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 import numpy as np
-from sklearn.datasets import fetch_kddcup99
-from sklearn.preprocessing import StandardScaler
+from torchvision import datasets, transforms
 from sklearn.metrics import precision_score, recall_score, f1_score
 from sklearn.model_selection import train_test_split
 
@@ -11,88 +10,65 @@ from sklearn.model_selection import train_test_split
 # CONFIG
 # ================================
 
-LATENT_DIM = 16
-BETA = 1.0
-BATCH_SIZE = 256
-EPOCHS = 20
-LR = 1e-3
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+EPOCHS = 15
+BATCH_SIZE = 128
+LR = 1e-3
+PERCENTILE = 95
 
-print("Using device:", DEVICE)
+LATENT_DIMS = [8, 16, 32]
+BETAS = [0.5, 1.0, 2.0]
+
+print("Device:", DEVICE)
 
 # ================================
-# LOAD KDD DATASET
+# DATASET (MNIST)
 # ================================
 
-data = fetch_kddcup99(subset='SA', percent10=True)
+transform = transforms.ToTensor()
+mnist = datasets.MNIST("./data", train=True, download=True, transform=transform)
 
-X = data.data
-y = data.target
+X = []
+y = []
 
-# Convert bytes to string labels
-y = np.array([label.decode() for label in y])
+for img, label in mnist:
+    X.append(img.view(-1).numpy())
+    y.append(0 if label == 0 else 1)  # 0 normal, 1 anomaly
 
-# Normal = "normal"
-y_binary = np.array([0 if label == "normal." else 1 for label in y])
-
-# Convert categorical features to numeric
 X = np.array(X)
+y = np.array(y)
 
-# Keep only numeric columns
-numeric_mask = []
-for i in range(X.shape[1]):
-    try:
-        X[:, i].astype(float)
-        numeric_mask.append(i)
-    except:
-        continue
+# Train / Val / Test
+X_normal = X[y == 0]
 
-X = X[:, numeric_mask].astype(float)
-
-# Standardize
-scaler = StandardScaler()
-X = scaler.fit_transform(X)
-
-# Train only on normal data
-X_train = X[y_binary == 0]
-X_test = X
-y_test = y_binary
-
-input_dim = X.shape[1]
+X_train, X_val = train_test_split(X_normal, test_size=0.2, random_state=42)
+X_test, y_test = X, y
 
 # ================================
-# DATALOADER
-# ================================
-
-train_loader = torch.utils.data.DataLoader(
-    torch.tensor(X_train, dtype=torch.float32),
-    batch_size=BATCH_SIZE,
-    shuffle=True
-)
-
-X_test_tensor = torch.tensor(X_test, dtype=torch.float32).to(DEVICE)
-train_tensor = torch.tensor(X_train, dtype=torch.float32).to(DEVICE)
-
-# ================================
-# VAE MODEL
+# MODELS
 # ================================
 
 class VAE(nn.Module):
     def __init__(self, input_dim, latent_dim):
-        super(VAE, self).__init__()
+        super().__init__()
 
         self.encoder = nn.Sequential(
-            nn.Linear(input_dim, 128),
+            nn.Linear(input_dim, 512),
+            nn.ReLU(),
+            nn.Linear(512, 256),
             nn.ReLU()
         )
 
-        self.mu = nn.Linear(128, latent_dim)
-        self.logvar = nn.Linear(128, latent_dim)
+        self.mu = nn.Linear(256, latent_dim)
+        self.logvar = nn.Linear(256, latent_dim)
 
         self.decoder = nn.Sequential(
-            nn.Linear(latent_dim, 128),
+            nn.Linear(latent_dim, 256),
             nn.ReLU(),
-            nn.Linear(128, input_dim)
+            nn.Linear(256, 512),
+            nn.ReLU(),
+            nn.Linear(512, input_dim),
+            nn.Sigmoid()
         )
 
     def reparameterize(self, mu, logvar):
@@ -102,126 +78,149 @@ class VAE(nn.Module):
 
     def forward(self, x):
         h = self.encoder(x)
-        mu = self.mu(h)
-        logvar = self.logvar(h)
+        mu, logvar = self.mu(h), self.logvar(h)
         z = self.reparameterize(mu, logvar)
-        recon = self.decoder(z)
-        return recon, mu, logvar
+        return self.decoder(z), mu, logvar
 
 
-def vae_loss(recon_x, x, mu, logvar):
-    recon_loss = nn.functional.mse_loss(recon_x, x, reduction='mean')
+def vae_loss(recon, x, mu, logvar, beta):
+    recon_loss = nn.functional.mse_loss(recon, x, reduction="mean")
     kl = -0.5 * torch.mean(1 + logvar - mu.pow(2) - logvar.exp())
-    return recon_loss + BETA * kl
+    return recon_loss + beta * kl
 
-
-# ================================
-# BASELINE AUTOENCODER
-# ================================
 
 class Autoencoder(nn.Module):
     def __init__(self, input_dim, latent_dim):
-        super(Autoencoder, self).__init__()
+        super().__init__()
 
         self.encoder = nn.Sequential(
-            nn.Linear(input_dim, 128),
+            nn.Linear(input_dim, 512),
             nn.ReLU(),
-            nn.Linear(128, latent_dim)
+            nn.Linear(512, latent_dim)
         )
 
         self.decoder = nn.Sequential(
-            nn.Linear(latent_dim, 128),
+            nn.Linear(latent_dim, 512),
             nn.ReLU(),
-            nn.Linear(128, input_dim)
+            nn.Linear(512, input_dim),
+            nn.Sigmoid()
         )
 
     def forward(self, x):
-        z = self.encoder(x)
-        return self.decoder(z)
-
+        return self.decoder(self.encoder(x))
 
 # ================================
-# TRAIN VAE
+# GRID SEARCH (VALIDATION)
 # ================================
 
-vae = VAE(input_dim, LATENT_DIM).to(DEVICE)
-optimizer = optim.Adam(vae.parameters(), lr=LR)
+best_score = 0
+best_config = None
 
-print("\nTraining VAE...")
-for epoch in range(EPOCHS):
-    vae.train()
-    total_loss = 0
+for latent in LATENT_DIMS:
+    for beta in BETAS:
+
+        model = VAE(784, latent).to(DEVICE)
+        opt = optim.Adam(model.parameters(), lr=LR)
+
+        train_loader = torch.utils.data.DataLoader(
+            torch.tensor(X_train, dtype=torch.float32),
+            batch_size=BATCH_SIZE,
+            shuffle=True
+        )
+
+        # Train
+        for _ in range(EPOCHS):
+            model.train()
+            for batch in train_loader:
+                batch = batch.to(DEVICE)
+                opt.zero_grad()
+                recon, mu, logvar = model(batch)
+                loss = vae_loss(recon, batch, mu, logvar, beta)
+                loss.backward()
+                opt.step()
+
+        # Validate
+        model.eval()
+        with torch.no_grad():
+            val_tensor = torch.tensor(X_val, dtype=torch.float32).to(DEVICE)
+            recon, _, _ = model(val_tensor)
+            errors = torch.mean((recon - val_tensor) ** 2, dim=1).cpu().numpy()
+
+        threshold = np.percentile(errors, PERCENTILE)
+        preds = (errors > threshold).astype(int)
+
+        score = -np.mean(errors)  # proxy score
+        print(f"Latent={latent}, Beta={beta}, Score={score:.4f}")
+
+        if score > best_score:
+            best_score = score
+            best_config = (latent, beta)
+
+print("\nBEST CONFIG:", best_config)
+
+# ================================
+# FINAL TRAINING
+# ================================
+
+LATENT_DIM, BETA = best_config
+
+vae = VAE(784, LATENT_DIM).to(DEVICE)
+ae = Autoencoder(784, LATENT_DIM).to(DEVICE)
+
+opt_vae = optim.Adam(vae.parameters(), lr=LR)
+opt_ae = optim.Adam(ae.parameters(), lr=LR)
+
+train_loader = torch.utils.data.DataLoader(
+    torch.tensor(X_train, dtype=torch.float32),
+    batch_size=BATCH_SIZE,
+    shuffle=True
+)
+
+for _ in range(EPOCHS):
     for batch in train_loader:
         batch = batch.to(DEVICE)
-        optimizer.zero_grad()
+
+        # VAE
+        opt_vae.zero_grad()
         recon, mu, logvar = vae(batch)
-        loss = vae_loss(recon, batch, mu, logvar)
+        loss = vae_loss(recon, batch, mu, logvar, BETA)
         loss.backward()
-        optimizer.step()
-        total_loss += loss.item()
+        opt_vae.step()
 
-    print(f"Epoch {epoch+1}/{EPOCHS} - Loss: {total_loss/len(train_loader):.4f}")
-
-
-# ================================
-# TRAIN AUTOENCODER
-# ================================
-
-ae = Autoencoder(input_dim, LATENT_DIM).to(DEVICE)
-optimizer_ae = optim.Adam(ae.parameters(), lr=LR)
-
-print("\nTraining Autoencoder...")
-for epoch in range(EPOCHS):
-    ae.train()
-    total_loss = 0
-    for batch in train_loader:
-        batch = batch.to(DEVICE)
-        optimizer_ae.zero_grad()
-        recon = ae(batch)
-        loss = nn.functional.mse_loss(recon, batch)
-        loss.backward()
-        optimizer_ae.step()
-        total_loss += loss.item()
-
-    print(f"[AE] Epoch {epoch+1}/{EPOCHS} - Loss: {total_loss/len(train_loader):.4f}")
-
+        # AE
+        opt_ae.zero_grad()
+        recon_ae = ae(batch)
+        loss_ae = nn.functional.mse_loss(recon_ae, batch)
+        loss_ae.backward()
+        opt_ae.step()
 
 # ================================
-# EVALUATION
+# TEST EVALUATION
 # ================================
 
-vae.eval()
+X_test_tensor = torch.tensor(X_test, dtype=torch.float32).to(DEVICE)
+
 with torch.no_grad():
     recon, _, _ = vae(X_test_tensor)
-    errors = torch.mean((recon - X_test_tensor)**2, dim=1).cpu().numpy()
+    err_vae = torch.mean((recon - X_test_tensor) ** 2, dim=1).cpu().numpy()
 
-threshold = np.percentile(errors[y_test == 0], 95)
-vae_pred = (errors > threshold).astype(int)
-
-vae_precision = precision_score(y_test, vae_pred)
-vae_recall = recall_score(y_test, vae_pred)
-vae_f1 = f1_score(y_test, vae_pred)
-
-
-ae.eval()
-with torch.no_grad():
     recon_ae = ae(X_test_tensor)
-    ae_errors = torch.mean((recon_ae - X_test_tensor)**2, dim=1).cpu().numpy()
+    err_ae = torch.mean((recon_ae - X_test_tensor) ** 2, dim=1).cpu().numpy()
 
-ae_threshold = np.percentile(ae_errors[y_test == 0], 95)
-ae_pred = (ae_errors > ae_threshold).astype(int)
+thr_vae = np.percentile(err_vae[y_test == 0], PERCENTILE)
+thr_ae = np.percentile(err_ae[y_test == 0], PERCENTILE)
 
-ae_precision = precision_score(y_test, ae_pred)
-ae_recall = recall_score(y_test, ae_pred)
-ae_f1 = f1_score(y_test, ae_pred)
+pred_vae = (err_vae > thr_vae).astype(int)
+pred_ae = (err_ae > thr_ae).astype(int)
 
-print("\n=========== FINAL RESULTS ===========")
+print("\n==== FINAL METRICS ====")
+
 print("\nVAE")
-print("Precision:", vae_precision)
-print("Recall:", vae_recall)
-print("F1:", vae_f1)
+print("Precision:", precision_score(y_test, pred_vae))
+print("Recall:", recall_score(y_test, pred_vae))
+print("F1:", f1_score(y_test, pred_vae))
 
 print("\nAutoencoder")
-print("Precision:", ae_precision)
-print("Recall:", ae_recall)
-print("F1:", ae_f1)
+print("Precision:", precision_score(y_test, pred_ae))
+print("Recall:", recall_score(y_test, pred_ae))
+print("F1:", f1_score(y_test, pred_ae))
