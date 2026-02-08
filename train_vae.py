@@ -1,73 +1,49 @@
+# train_vae.py
+
 import torch
 import torch.nn as nn
 import torch.optim as optim
 import numpy as np
-import pandas as pd
-
-from sklearn.datasets import fetch_kddcup99
-from sklearn.preprocessing import StandardScaler, OneHotEncoder
+from sklearn.metrics import precision_score, recall_score, f1_score
 from sklearn.model_selection import train_test_split
-from sklearn.metrics import precision_score, recall_score, f1_score, roc_auc_score
+from torchvision import datasets, transforms
 
-# ==========================================================
-# CONFIG
-# ==========================================================
+# ==========================
+# 1. CONFIG
+# ==========================
 
-BATCH_SIZE = 256
-EPOCHS = 20
-LR = 1e-3
+LATENT_DIM = 16
+BATCH_SIZE = 128
+EPOCHS = 15
 BETA = 1.0
-LATENT_OPTIONS = [8, 16, 32]
-
+LR = 1e-3
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-print("Device:", DEVICE)
 
-# ==========================================================
-# LOAD DATA
-# ==========================================================
+# ==========================
+# 2. DATASET (MNIST)
+# Normal = digit 0
+# Anomaly = other digits
+# ==========================
 
-data = fetch_kddcup99(subset="SA", percent10=True)
+transform = transforms.Compose([
+    transforms.ToTensor()
+])
 
-X_raw = pd.DataFrame(data.data)
-y_raw = pd.Series(data.target)
+mnist = datasets.MNIST(root="./data", train=True, download=True, transform=transform)
 
-# Decode labels
-y_raw = y_raw.apply(lambda x: x.decode())
-y_binary = (y_raw != "normal.").astype(int)
+X = []
+y = []
 
-# Identify categorical columns (object type)
-categorical_cols = X_raw.select_dtypes(include=["object"]).columns
-numeric_cols = X_raw.select_dtypes(exclude=["object"]).columns
+for img, label in mnist:
+    X.append(img.view(-1).numpy())
+    y.append(0 if label == 0 else 1)  # 0 = normal, 1 = anomaly
 
-# One-hot encode categorical features
-encoder = OneHotEncoder(sparse=False, handle_unknown='ignore')
-X_cat = encoder.fit_transform(X_raw[categorical_cols])
+X = np.array(X)
+y = np.array(y)
 
-# Scale numeric features
-scaler = StandardScaler()
-X_num = scaler.fit_transform(X_raw[numeric_cols])
-
-# Combine
-X_processed = np.hstack([X_num, X_cat])
-
-# Split normal vs anomaly
-X_normal = X_processed[y_binary == 0]
-X_anomaly = X_processed[y_binary == 1]
-
-# Train/Validation split (only normal data for training)
-X_train, X_val = train_test_split(X_normal, test_size=0.2, random_state=42)
-
-# Full test set (normal + anomaly)
-X_test = X_processed
-y_test = y_binary.values
-
-input_dim = X_processed.shape[1]
-
-print("Final feature dimension:", input_dim)
-
-# ==========================================================
-# DATA LOADERS
-# ==========================================================
+# Train only on normal samples
+X_train = X[y == 0]
+X_test, y_test = X, y
 
 train_loader = torch.utils.data.DataLoader(
     torch.tensor(X_train, dtype=torch.float32),
@@ -75,33 +51,27 @@ train_loader = torch.utils.data.DataLoader(
     shuffle=True
 )
 
-val_tensor = torch.tensor(X_val, dtype=torch.float32).to(DEVICE)
-test_tensor = torch.tensor(X_test, dtype=torch.float32).to(DEVICE)
-
-# ==========================================================
-# MODEL DEFINITIONS
-# ==========================================================
+# ==========================
+# 3. VAE MODEL
+# ==========================
 
 class VAE(nn.Module):
-    def __init__(self, input_dim, latent_dim):
+    def __init__(self, input_dim=784, latent_dim=LATENT_DIM):
         super(VAE, self).__init__()
 
         self.encoder = nn.Sequential(
-            nn.Linear(input_dim, 256),
-            nn.ReLU(),
-            nn.Linear(256, 128),
+            nn.Linear(input_dim, 400),
             nn.ReLU()
         )
 
-        self.mu = nn.Linear(128, latent_dim)
-        self.logvar = nn.Linear(128, latent_dim)
+        self.mu = nn.Linear(400, latent_dim)
+        self.logvar = nn.Linear(400, latent_dim)
 
         self.decoder = nn.Sequential(
-            nn.Linear(latent_dim, 128),
+            nn.Linear(latent_dim, 400),
             nn.ReLU(),
-            nn.Linear(128, 256),
-            nn.ReLU(),
-            nn.Linear(256, input_dim)
+            nn.Linear(400, input_dim),
+            nn.Sigmoid()
         )
 
     def reparameterize(self, mu, logvar):
@@ -117,122 +87,66 @@ class VAE(nn.Module):
         recon = self.decoder(z)
         return recon, mu, logvar
 
-
-class Autoencoder(nn.Module):
-    def __init__(self, input_dim, latent_dim):
-        super(Autoencoder, self).__init__()
-
-        self.encoder = nn.Sequential(
-            nn.Linear(input_dim, 256),
-            nn.ReLU(),
-            nn.Linear(256, latent_dim)
-        )
-
-        self.decoder = nn.Sequential(
-            nn.Linear(latent_dim, 256),
-            nn.ReLU(),
-            nn.Linear(256, input_dim)
-        )
-
-    def forward(self, x):
-        return self.decoder(self.encoder(x))
-
+# ==========================
+# 4. LOSS FUNCTION
+# ==========================
 
 def vae_loss(recon_x, x, mu, logvar):
-    recon_loss = nn.functional.mse_loss(recon_x, x, reduction="mean")
-    kl = -0.5 * torch.mean(1 + logvar - mu.pow(2) - logvar.exp())
+    recon_loss = nn.functional.mse_loss(recon_x, x, reduction='sum')
+    kl = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp())
     return recon_loss + BETA * kl
 
+# ==========================
+# 5. TRAINING
+# ==========================
 
-# ==========================================================
-# HYPERPARAMETER SEARCH
-# ==========================================================
-
-best_latent = None
-best_f1 = 0
-results = {}
-
-for latent_dim in LATENT_OPTIONS:
-    print("\nTesting Latent Dimension:", latent_dim)
-
-    model = VAE(input_dim, latent_dim).to(DEVICE)
-    optimizer = optim.Adam(model.parameters(), lr=LR)
-
-    # Train
-    for epoch in range(EPOCHS):
-        model.train()
-        for batch in train_loader:
-            batch = batch.to(DEVICE)
-            optimizer.zero_grad()
-            recon, mu, logvar = model(batch)
-            loss = vae_loss(recon, batch, mu, logvar)
-            loss.backward()
-            optimizer.step()
-
-    # Validation threshold
-    model.eval()
-    with torch.no_grad():
-        recon_val, _, _ = model(val_tensor)
-        val_errors = torch.mean((recon_val - val_tensor)**2, dim=1).cpu().numpy()
-
-    threshold = np.percentile(val_errors, 95)
-
-    # Test evaluation
-    with torch.no_grad():
-        recon_test, _, _ = model(test_tensor)
-        test_errors = torch.mean((recon_test - test_tensor)**2, dim=1).cpu().numpy()
-
-    preds = (test_errors > threshold).astype(int)
-
-    precision = precision_score(y_test, preds)
-    recall = recall_score(y_test, preds)
-    f1 = f1_score(y_test, preds)
-
-    print("Precision:", precision)
-    print("Recall:", recall)
-    print("F1:", f1)
-
-    results[latent_dim] = f1
-
-    if f1 > best_f1:
-        best_f1 = f1
-        best_latent = latent_dim
-
-print("\nBest Latent Dimension:", best_latent)
-
-# ==========================================================
-# TRAIN BASELINE AE WITH BEST LATENT
-# ==========================================================
-
-ae = Autoencoder(input_dim, best_latent).to(DEVICE)
-optimizer = optim.Adam(ae.parameters(), lr=LR)
+model = VAE().to(DEVICE)
+optimizer = optim.Adam(model.parameters(), lr=LR)
 
 for epoch in range(EPOCHS):
-    ae.train()
+    model.train()
+    total_loss = 0
+
     for batch in train_loader:
         batch = batch.to(DEVICE)
+
         optimizer.zero_grad()
-        recon = ae(batch)
-        loss = nn.functional.mse_loss(recon, batch)
+        recon, mu, logvar = model(batch)
+        loss = vae_loss(recon, batch, mu, logvar)
         loss.backward()
         optimizer.step()
 
-ae.eval()
+        total_loss += loss.item()
+
+    print(f"Epoch {epoch+1}, Loss: {total_loss/len(train_loader):.4f}")
+
+# ==========================
+# 6. ANOMALY DETECTION
+# ==========================
+
+model.eval()
+X_test_tensor = torch.tensor(X_test, dtype=torch.float32).to(DEVICE)
+
 with torch.no_grad():
-    recon_test = ae(test_tensor)
-    errors = torch.mean((recon_test - test_tensor)**2, dim=1).cpu().numpy()
+    recon, mu, logvar = model(X_test_tensor)
+    errors = torch.mean((recon - X_test_tensor) ** 2, dim=1)
+    errors = errors.cpu().numpy()
 
-threshold = np.percentile(errors[y_test == 0], 95)
-ae_preds = (errors > threshold).astype(int)
+# Threshold = 95th percentile of normal training errors
+train_tensor = torch.tensor(X_train, dtype=torch.float32).to(DEVICE)
+with torch.no_grad():
+    recon_train, _, _ = model(train_tensor)
+    train_errors = torch.mean((recon_train - train_tensor) ** 2, dim=1)
+    threshold = np.percentile(train_errors.cpu().numpy(), 95)
 
-ae_precision = precision_score(y_test, ae_preds)
-ae_recall = recall_score(y_test, ae_preds)
-ae_f1 = f1_score(y_test, ae_preds)
+print("Anomaly Threshold:", threshold)
 
-print("\n================ FINAL RESULTS ================")
-print("Best VAE Latent:", best_latent)
-print("Best VAE F1:", best_f1)
-print("\nAutoencoder Results:")
-print("Precision:", ae_precision)
-print("Recall:", ae_recall)
-print("F1:", ae_f1)
+y_pred = (errors > threshold).astype(int)
+
+precision = precision_score(y_test, y_pred)
+recall = recall_score(y_test, y_pred)
+f1 = f1_score(y_test, y_pred)
+
+print("Precision:", precision)
+print("Recall:", recall)
+print("F1 Score:", f1)
