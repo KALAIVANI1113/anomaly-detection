@@ -1,15 +1,12 @@
-# train_vae.py
-
 import torch
 import torch.nn as nn
 import torch.optim as optim
 import numpy as np
 from sklearn.metrics import precision_score, recall_score, f1_score
-from sklearn.model_selection import train_test_split
 from torchvision import datasets, transforms
 
 # ==========================
-# 1. CONFIG
+# CONFIG
 # ==========================
 
 LATENT_DIM = 16
@@ -20,15 +17,10 @@ LR = 1e-3
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
 # ==========================
-# 2. DATASET (MNIST)
-# Normal = digit 0
-# Anomaly = other digits
+# DATASET (MNIST)
 # ==========================
 
-transform = transforms.Compose([
-    transforms.ToTensor()
-])
-
+transform = transforms.ToTensor()
 mnist = datasets.MNIST(root="./data", train=True, download=True, transform=transform)
 
 X = []
@@ -36,14 +28,14 @@ y = []
 
 for img, label in mnist:
     X.append(img.view(-1).numpy())
-    y.append(0 if label == 0 else 1)  # 0 = normal, 1 = anomaly
+    y.append(0 if label == 0 else 1)
 
 X = np.array(X)
 y = np.array(y)
 
-# Train only on normal samples
 X_train = X[y == 0]
-X_test, y_test = X, y
+X_test = X:
+y_test = y
 
 train_loader = torch.utils.data.DataLoader(
     torch.tensor(X_train, dtype=torch.float32),
@@ -51,8 +43,11 @@ train_loader = torch.utils.data.DataLoader(
     shuffle=True
 )
 
+X_test_tensor = torch.tensor(X_test, dtype=torch.float32).to(DEVICE)
+train_tensor = torch.tensor(X_train, dtype=torch.float32).to(DEVICE)
+
 # ==========================
-# 3. VAE MODEL
+# VAE MODEL
 # ==========================
 
 class VAE(nn.Module):
@@ -80,6 +75,7 @@ class VAE(nn.Module):
         return mu + eps * std
 
     def forward(self, x):
+        recon, mu, logvar = None, None, None
         h = self.encoder(x)
         mu = self.mu(h)
         logvar = self.logvar(h)
@@ -87,66 +83,107 @@ class VAE(nn.Module):
         recon = self.decoder(z)
         return recon, mu, logvar
 
-# ==========================
-# 4. LOSS FUNCTION
-# ==========================
 
 def vae_loss(recon_x, x, mu, logvar):
-    recon_loss = nn.functional.mse_loss(recon_x, x, reduction='sum')
-    kl = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp())
+    recon_loss = nn.functional.mse_loss(recon_x, x)
+    kl = -0.5 * torch.mean(1 + logvar - mu.pow(2) - logvar.exp())
     return recon_loss + BETA * kl
 
+
 # ==========================
-# 5. TRAINING
+# BASELINE AUTOENCODER
 # ==========================
 
-model = VAE().to(DEVICE)
-optimizer = optim.Adam(model.parameters(), lr=LR)
+class Autoencoder(nn.Module):
+    def __init__(self, input_dim=784, latent_dim=LATENT_DIM):
+        super(Autoencoder, self).__init__()
+
+        self.encoder = nn.Sequential(
+            nn.Linear(input_dim, 400),
+            nn.ReLU(),
+            nn.Linear(400, latent_dim)
+        )
+
+        self.decoder = nn.Sequential(
+            nn.Linear(latent_dim, 400),
+            nn.ReLU(),
+            nn.Linear(400, input_dim),
+            nn.Sigmoid()
+        )
+
+    def forward(self, x):
+        return self.decoder(self.encoder(x))
+
+
+# ==========================
+# TRAIN VAE
+# ==========================
+
+vae = VAE().to(DEVICE)
+optimizer = optim.Adam(vae.parameters(), lr=LR)
 
 for epoch in range(EPOCHS):
-    model.train()
-    total_loss = 0
-
+    vae.train()
     for batch in train_loader:
         batch = batch.to(DEVICE)
-
         optimizer.zero_grad()
-        recon, mu, logvar = model(batch)
+        recon, mu, logvar = vae(batch)
         loss = vae_loss(recon, batch, mu, logvar)
         loss.backward()
         optimizer.step()
 
-        total_loss += loss.item()
-
-    print(f"Epoch {epoch+1}, Loss: {total_loss/len(train_loader):.4f}")
-
 # ==========================
-# 6. ANOMALY DETECTION
+# TRAIN AUTOENCODER
 # ==========================
 
-model.eval()
-X_test_tensor = torch.tensor(X_test, dtype=torch.float32).to(DEVICE)
+ae = Autoencoder().to(DEVICE)
+optimizer_ae = optim.Adam(ae.parameters(), lr=LR)
 
+for epoch in range(EPOCHS):
+    ae.train()
+    for batch in train_loader:
+        batch = batch.to(DEVICE)
+        optimizer_ae.zero_grad()
+        recon = ae(batch)
+        loss = nn.functional.mse_loss(recon, batch)
+        loss.backward()
+        optimizer_ae.step()
+
+# ==========================
+# EVALUATION
+# ==========================
+
+vae.eval()
 with torch.no_grad():
-    recon, mu, logvar = model(X_test_tensor)
-    errors = torch.mean((recon - X_test_tensor) ** 2, dim=1)
-    errors = errors.cpu().numpy()
+    recon, _, _ = vae(X_test_tensor)
+    errors = torch.mean((recon - X_test_tensor)**2, dim=1).cpu().numpy()
 
-# Threshold = 95th percentile of normal training errors
-train_tensor = torch.tensor(X_train, dtype=torch.float32).to(DEVICE)
+threshold = np.percentile(errors[y_test == 0], 95)
+vae_pred = (errors > threshold).astype(int)
+
+vae_precision = precision_score(y_test, vae_pred)
+vae_recall = recall_score(y_test, vae_pred)
+vae_f1 = f1_score(y_test, vae_pred)
+
+ae.eval()
 with torch.no_grad():
-    recon_train, _, _ = model(train_tensor)
-    train_errors = torch.mean((recon_train - train_tensor) ** 2, dim=1)
-    threshold = np.percentile(train_errors.cpu().numpy(), 95)
+    recon = ae(X_test_tensor)
+    ae_errors = torch.mean((recon - X_test_tensor)**2, dim=1).cpu().numpy()
 
-print("Anomaly Threshold:", threshold)
+ae_threshold = np.percentile(ae_errors[y_test == 0], 95)
+ae_pred = (ae_errors > ae_threshold).astype(int)
 
-y_pred = (errors > threshold).astype(int)
+ae_precision = precision_score(y_test, ae_pred)
+ae_recall = recall_score(y_test, ae_pred)
+ae_f1 = f1_score(y_test, ae_pred)
 
-precision = precision_score(y_test, y_pred)
-recall = recall_score(y_test, y_pred)
-f1 = f1_score(y_test, y_pred)
+print("\n===== FINAL RESULTS =====")
+print("\nVAE:")
+print("Precision:", vae_precision)
+print("Recall:", vae_recall)
+print("F1:", vae_f1)
 
-print("Precision:", precision)
-print("Recall:", recall)
-print("F1 Score:", f1)
+print("\nAutoencoder:")
+print("Precision:", ae_precision)
+print("Recall:", ae_recall)
+print("F1:", ae_f1)
